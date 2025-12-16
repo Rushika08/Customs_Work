@@ -4,22 +4,42 @@ import calendar
 import re
 import pyodbc
 from sqlalchemy import create_engine
+import urllib
+from dotenv import load_dotenv
+
+# ✅ Load environment variables
+load_dotenv()
 
 # --- 🗂 Folder containing all monthly Excel files ---
-folder_path = r'C:\Users\rushika\Downloads\Actual revenue ETL\Bank Collection'
+folder_path = r'E:\Revenue Sources\Bank Sheets'
 
-# SQL Server connection using working pyodbc driver
-server = r'localhost\RUSH'
-database = 'DevServer'
-username = 'sa'
-password = 'Qwertyui123#'
+# --- 📂 Output folder for loaded Excel files ---
+output_folder = r'E:\Revenue Sources Loaded\Bank Sheets'
+os.makedirs(output_folder, exist_ok=True)
 
-# Create SQLAlchemy engine using the working pyodbc connection
-conn_str = (
-    f"mssql+pyodbc://{username}:{password}@{server}/{database}"
-    "?driver=ODBC+Driver+17+for+SQL+Server"
+
+# 🔐 Read credentials from .env
+server = os.getenv("DB_SERVER")
+database = os.getenv("DB_NAME")
+username = os.getenv("DB_USER")
+password = os.getenv("DB_PASSWORD")
+
+# 🚨 Safety check
+if not all([server, database, username, password]):
+    raise ValueError("❌ Database environment variables not loaded")
+
+# ✅ WORKING SQLALCHEMY CONNECTION (odbc_connect)
+params = urllib.parse.quote_plus(
+    f"DRIVER={{ODBC Driver 17 for SQL Server}};"
+    f"SERVER={server};"
+    f"DATABASE={database};"
+    f"UID={username};"
+    f"PWD={password};"
+    "TrustServerCertificate=yes;"
+    "Encrypt=no;"
 )
-engine = create_engine(conn_str)
+
+engine = create_engine(f"mssql+pyodbc:///?odbc_connect={params}")
 
 # Table / schema
 table_name = 'Bank_Payment_Collection'
@@ -79,7 +99,10 @@ for file_name in excel_files:
     # -------------------------
     # 🧹 Remove unused columns
     # -------------------------
-    df = df_raw.drop(columns=[c for c in df_raw.columns if str(c).strip() in unused_cols], errors="ignore")
+    df = df_raw.drop(
+        columns=[c for c in df_raw.columns if str(c).strip() in unused_cols],
+        errors="ignore"
+    )
 
     # -------------------------
     # 🚫 Remove accidental Day / Blank columns
@@ -96,7 +119,7 @@ for file_name in excel_files:
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
     # -------------------------
-    # 🗓 Create Date column based on row count
+    # 🗓 Create Date column
     # -------------------------
     valid_row_count = min(len(df), days_in_month)
     df = df.head(valid_row_count)
@@ -115,13 +138,15 @@ for file_name in excel_files:
     # -------------------------
     # 💾 Save output locally (optional)
     # -------------------------
-    output_name = file_name.replace(".xlsx", "_updated.xlsx")
-    output_path = os.path.join(folder_path, output_name)
+    output_name = file_name.replace(".xlsx", "_loaded.xlsx")
+    output_path = os.path.join(output_folder, output_name)
+
     df.to_excel(output_path, index=False, float_format="%.10f")
-    print(f"✅ File processed and saved locally: {output_path}")
+    print(f"✅ File processed and saved to loaded folder: {output_path}")
+
 
     # -------------------------
-    # 💻 Append to SQL Server table
+    # 💻 Append to SQL Server
     # -------------------------
     try:
         df.to_sql(
@@ -129,10 +154,24 @@ for file_name in excel_files:
             con=engine,
             schema=schema_name,
             index=False,
-            if_exists='append'
+            if_exists='append',
+            method='multi'  # 🚀 faster inserts
         )
+        sql_success = True
         print(f"✅ Data appended to SQL Server: {schema_name}.{table_name}")
     except Exception as e:
         print(f"⚠️ Failed to write to SQL Server: {e}")
 
-print("\n✅ All files processed and written to SQL Server successfully.")
+    # -------------------------
+    # 🗑 Delete source file ONLY if SQL succeeded
+    # -------------------------
+    if sql_success:
+        try:
+            os.remove(file_path)
+            print(f"🗑 Source file deleted: {file_path}")
+        except Exception as e:
+            print(f"⚠️ Could not delete source file: {e}")
+    else:
+        print(f"🚫 Source file NOT deleted due to processing failure: {file_path}")
+
+print("\n🎉 All files processed and written to SQL Server successfully.")
